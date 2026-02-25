@@ -1,315 +1,129 @@
-import React, { useEffect, useState } from 'react';
-import { StatusBar } from 'expo-status-bar';
-import * as ImagePicker from 'expo-image-picker';
-import {
-  StyleSheet,
-  Text,
-  View,
-  TextInput,
-  Button,
-  FlatList,
-  ActivityIndicator,
-  Alert,
-  TouchableOpacity,
-  Image,
-} from 'react-native';
+const mongoose = require('mongoose');
+const express = require('express');
+const helmet = require('helmet'); // New security import
+const cors = require('cors');     // FIX: You forgot to require cors
+require('dotenv').config();
 
-const BASE_URL = 'https://precartilaginous-sciential-almeda.ngrok-free.dev';
+const app = express();
 
-export default function App() {
-  const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [posting, setPosting] = useState(false);
-  const [editingId, setEditingId] = useState(null);
+// Security and Middleware 
+app.use(helmet());           // Protects against common web vulnerabilities
+app.use(cors());             // Allows your mobile app to talk to this server [cite: 243]
+app.use(express.json({ limit: '10mb' }));      // Standard for receiving JSON data, increased limit for base64 images
 
-  const [name, setName] = useState('');
-  const [price, setPrice] = useState('');
-  const [description, setDescription] = useState('');
-  const [image, setImage] = useState(null); // Hold capture image
+// Environment Variables
+const MONGO_URI = process.env.MONGO_URI; 
+const PORT = process.env.PORT || 3000;
 
-  // Function to take photo using device camera
-  const takePhoto = async () => {
-    // Request permissions
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission Denied', 'We need camera access to take photos.');
-      return;
-    }
+// Mongoose Schema and Model
+const productSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  price: { type: Number, default: 0 },
+  description: { type: String },
+  image: { type: String } // Store Base64 string here
+});
 
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 0.5, // Keep quality low to avoid huge MongoDB documents
-      base64: true, // This is crucial!
+const Product = mongoose.model('Product', productSchema);
+
+
+// Routes
+app.get('/api/status', (req, res) => {
+  res.json({ 
+    status: "Online",
+    message: "AWS Backend is reachable!",
+    owner: "Fergus Downey", // Change this to your name!!!
+    timestamp: new Date()
+  });
+});
+
+
+// CREATE a new product
+app.post('/products', async (req, res) => {
+  try {
+    const { name, price, description, image } = req.body; // include image from client
+    const newProduct = await Product.create({ name, price, description, image });
+    
+    //const newProduct = new Product({ name, price, description });
+    //await newProduct.save();
+
+    res.status(201).json({
+      message: "Product added successfully!", // Requirement satisfied
+      product: newProduct
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Error adding product", error: err.message });
+  }
+});
+
+// READ all products
+app.get('/products', async (req, res) => {
+  try {
+    const products = await Product.find();
+    res.json(products);
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching products" });
+  }
+});
+
+// UPDATE a product by ID
+app.put('/products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    const updatedProduct = await Product.findByIdAndUpdate(id, updates, {
+      new: true,
+      runValidators: true
     });
 
-    if (!result.canceled) {
-      setImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
+    if (!updatedProduct) {
+      return res.status(404).json({ message: 'Product not found' });
     }
-  };
 
-
-  useEffect(() => {
-    fetchProducts();
-  }, []);
-
-  async function fetchProducts() {
-    setLoading(true);
-    try {
-      const res = await fetch(`${BASE_URL}/products`, {
-        headers: {
-          'Content-Type': 'application/json',
-          'ngrok-skip-browser-warning': 'true'
-        }
-      });
-      if (!res.ok) throw new Error(`Server responded ${res.status}`);
-      const data = await res.json();
-      setProducts(Array.isArray(data) ? data : []);
-    } catch (err) {
-      Alert.alert('Error', `Could not fetch products. ${err.message}`);
-      setProducts([]);
-    } finally {
-      setLoading(false);
-    }
+    res.json({ message: 'Product updated', product: updatedProduct });
+  } catch (err) {
+    res.status(500).json({ message: 'Error updating product', error: err.message });
   }
-
-  async function addProduct() {
-    if (!name.trim()) return Alert.alert('Validation', 'Name is required');
-    const parsedPrice = parseFloat(price);
-    if (price && Number.isNaN(parsedPrice)) return Alert.alert('Validation', 'Price must be a number');
-
-    setPosting(true);
-    try {
-      const body = { name: name.trim(), price: price ? parsedPrice : undefined, description: description.trim(), image: image };
-
-      if (editingId) {
-        // Update existing product
-        const res = await fetch(`${BASE_URL}/products/${editingId}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'ngrok-skip-browser-warning': 'true'
-          },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Server: ${res.status} ${text}`);
-        }
-        setEditingId(null);
-        Alert.alert('Success', 'Product updated');
-      } else {
-        // Create new product
-        const res = await fetch(`${BASE_URL}/products`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'ngrok-skip-browser-warning': 'true'
-          },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Server: ${res.status} ${text}`);
-        }
-        Alert.alert('Success', 'Product added');
-      }
-
-      // Clear inputs and refresh list
-      setName('');
-      setPrice('');
-      setDescription('');
-      setImage(null); // clear captured photo so Take Photo button returns to default
-      await fetchProducts();
-    } catch (err) {
-      Alert.alert('Error', `Could not save product. ${err.message}`);
-    } finally {
-      setPosting(false);
-    }
-  }
-
-  async function deleteProduct(id) {
-    const realId = id;
-    Alert.alert(
-      'Delete product',
-      'Are you sure you want to delete this product?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            setLoading(true);
-            try {
-              const res = await fetch(`${BASE_URL}/products/${realId}`, {
-                method: 'DELETE',
-                headers: { 'ngrok-skip-browser-warning': 'true' },
-              });
-              if (!res.ok) {
-                const text = await res.text();
-                throw new Error(`Server: ${res.status} ${text}`);
-              }
-              await fetchProducts();
-              Alert.alert('Deleted', 'Product removed');
-            } catch (err) {
-              Alert.alert('Error', `Could not delete product. ${err.message}`);
-            } finally {
-              setLoading(false);
-            }
-          }
-        }
-      ]
-    );
-  }
-
-  function onEditPress(item) {
-    setEditingId(item._id || item.id || null);
-    setName(item.name || '');
-    setPrice(item.price !== undefined && item.price !== null ? String(item.price) : '');
-    setDescription(item.description || '');
-    setImage(item.image || null); // load existing image into form when editing
-  }
-
-  function renderItem({ item }) {
-    return (
-      <View style={styles.item}>
-        <Text style={styles.itemTitle}>{item.name || 'Unnamed'}</Text>
-        {item.price !== undefined && item.price !== null ? (
-          <Text style={styles.itemPrice}>{`\u20AC${item.price}`}</Text>
-        ) : null}
-        {item.description ? <Text style={styles.itemDesc}>{item.description}</Text> : null}
-        {item.image && (
-          <Image 
-            source={{ uri: item.image }} 
-            style={{ width: 100, height: 100, borderRadius: 6, marginTop: 10 }} 
-          />
-        )}  
-
-        <View style={styles.itemButtons}>
-          <View style={styles.buttonWrap}>
-            <Button title="Edit" onPress={() => onEditPress(item)} />
-          </View>
-          <View style={styles.buttonWrap}>
-            <Button title="Delete" color="#d9534f" onPress={() => deleteProduct(item._id || item.id)} />
-          </View>
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.container}>
-      <Text style={styles.header}>ShopDemo Inventory — Add Product</Text>
-
-      <TextInput
-        style={styles.input}
-        placeholder="Name"
-        value={name}
-        onChangeText={setName}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Price (optional)"
-        value={price}
-        onChangeText={setPrice}
-        keyboardType="numeric"
-      />
-      <TextInput
-        style={[styles.input, styles.textArea]}
-        placeholder="Description (optional)"
-        value={description}
-        onChangeText={setDescription}
-        multiline
-      />
-
-      <View style={styles.photoRow}>
-        <Button
-          title={image ? 'Retake Photo' : 'Take Photo'}
-          onPress={takePhoto}
-          disabled={posting}
-        />
-        <View style={styles.spacer} />
-        {image ? (
-          <Image source={{ uri: image }} style={styles.preview} />
-        ) : null}
-      </View>
-
-      <View style={styles.buttonsRow}>
-        <Button title={posting ? (editingId ? 'Saving...' : 'Adding...') : (editingId ? 'Save' : 'Add Product')} onPress={addProduct} disabled={posting} />
-        <View style={styles.spacer} />
-        <Button title="Refresh" onPress={fetchProducts} disabled={loading} />
-      </View>
-
-      <Text style={styles.header}>Products</Text>
-
-      {loading ? (
-        <ActivityIndicator size="large" />
-      ) : (
-        <FlatList
-          data={products}
-          keyExtractor={(item, idx) => item._id || item.id || String(idx)}
-          renderItem={renderItem}
-          ListEmptyComponent={<Text style={styles.empty}>No products found.</Text>}
-          contentContainerStyle={products.length === 0 ? styles.emptyContainer : null}
-        />
-      )}
-
-      <StatusBar style="auto" />
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 16,
-    backgroundColor: '#fff',
-  },
-  header: {
-    fontSize: 18,
-    fontWeight: '600',
-    marginVertical: 8,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 6,
-    padding: 10,
-    marginVertical: 6,
-  },
-  textArea: {
-    minHeight: 60,
-    textAlignVertical: 'top',
-  },
-  photoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 8,
-  },
-  preview: {
-    width: 100,
-    height: 100,
-    borderRadius: 6,
-    marginLeft: 8,
-  },
-  buttonsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 8,
-  },
-  spacer: { width: 12 },
-  item: {
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 6,
-    marginVertical: 6,
-  },
-  itemTitle: { fontSize: 16, fontWeight: '600' },
-  itemPrice: { color: '#333', marginTop: 4 },
-  itemDesc: { color: '#666', marginTop: 6 },
-  itemButtons: { flexDirection: 'row', marginTop: 10 },
-  buttonWrap: { marginRight: 8 },
-  empty: { textAlign: 'center', color: '#666', marginTop: 20 },
-  emptyContainer: { flex: 1, justifyContent: 'center' },
 });
+
+// DELETE a product by ID
+app.delete('/products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await Product.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+    res.json({ message: 'Product deleted', product: deleted });
+  } catch (err) {
+    res.status(500).json({ message: 'Error deleting product', error: err.message });
+  }
+});
+
+mongoose.connect(MONGO_URI)
+  .then(async () => {
+    console.log("✅ Successfully connected to MongoDB");
+
+    // Seed initial products if none exist
+    const seedProducts = [
+      { name: 'tshirt', price: 20, description: 'Large green tshirt', image: 'base64string...' }
+    ];
+
+    try {
+      const count = await Product.countDocuments();
+      if (count === 0) {
+        await Product.insertMany(seedProducts);
+        console.log('🟢 Seeded initial products');
+      }
+    } catch (seedErr) {
+      console.error('Seed error:', seedErr.message);
+    }
+
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Server running on port: ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("❌ MongoDB Connection Error:", err.message);
+    process.exit(1); // Stop the server if the password is wrong
+  });
